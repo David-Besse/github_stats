@@ -3,16 +3,12 @@
 import asyncio
 import os
 import re
-
 import aiohttp
-
 from github_stats import Stats
-
 
 ################################################################################
 # Helper Functions
 ################################################################################
-
 
 def generate_output_folder() -> None:
     """
@@ -20,12 +16,37 @@ def generate_output_folder() -> None:
     """
     if not os.path.isdir("generated"):
         os.mkdir("generated")
+        print("Created directory: generated")
+    else:
+        print("Directory already exists: generated")
 
+def check_permissions() -> None:
+    """
+    Check necessary permissions for templates and generated folder
+    """
+    # Vérifier si le répertoire "templates" existe
+    if not os.path.isdir("templates"):
+        raise FileNotFoundError("The 'templates' directory does not exist")
+
+    # Vérifier si les fichiers de modèle existent
+    if not os.path.isfile("templates/overview.svg"):
+        raise FileNotFoundError("The file 'templates/overview.svg' does not exist")
+    if not os.path.isfile("templates/languages.svg"):
+        raise FileNotFoundError("The file 'templates/languages.svg' does not exist")
+
+    # Vérifier les permissions de lecture sur les fichiers de modèle
+    if not os.access("templates/overview.svg", os.R_OK):
+        raise PermissionError("Cannot read 'templates/overview.svg'")
+    if not os.access("templates/languages.svg", os.R_OK):
+        raise PermissionError("Cannot read 'templates/languages.svg'")
+
+    # Vérifier les permissions d'écriture sur le répertoire "generated"
+    if not os.access("generated", os.W_OK):
+        raise PermissionError("Cannot write to 'generated' directory")
 
 ################################################################################
 # Individual Image Generation Functions
 ################################################################################
-
 
 async def generate_overview(s: Stats) -> None:
     """
@@ -47,7 +68,7 @@ async def generate_overview(s: Stats) -> None:
     generate_output_folder()
     with open("generated/overview.svg", "w") as f:
         f.write(output)
-
+        print("Generated file: generated/overview.svg")
 
 async def generate_languages(s: Stats) -> None:
     """
@@ -88,20 +109,20 @@ fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8z"></path></svg>
     generate_output_folder()
     with open("generated/languages.svg", "w") as f:
         f.write(output)
-
+        print("Generated file: generated/languages.svg")
 
 ################################################################################
 # Main Function
 ################################################################################
 
-
 async def main() -> None:
     """
     Generate all badges
     """
+    check_permissions()
+
     access_token = os.getenv("ACCESS_TOKEN")
     if not access_token:
-        # access_token = os.getenv("GITHUB_TOKEN")
         raise Exception("A personal access token is required to proceed!")
     user = os.getenv("GITHUB_ACTOR")
     if user is None:
@@ -114,7 +135,6 @@ async def main() -> None:
     excluded_langs = (
         {x.strip() for x in exclude_langs.split(",")} if exclude_langs else None
     )
-    # Convert a truthy value to a Boolean
     raw_ignore_forked_repos = os.getenv("EXCLUDE_FORKED_REPOS")
     ignore_forked_repos = (
         not not raw_ignore_forked_repos
@@ -130,7 +150,6 @@ async def main() -> None:
             ignore_forked_repos=ignore_forked_repos,
         )
         await asyncio.gather(generate_languages(s), generate_overview(s))
-
 
 if __name__ == "__main__":
     asyncio.run(main())
