@@ -1,10 +1,11 @@
 # [GitHub Stats Visualization](https://github.com/jstrieb/github-stats)
 
-![githubstats](https://github.com/jstrieb/github-stats)
+<a href="https://github.com/jstrieb/github-stats">
 ![img1](https://github.com/jstrieb/github-stats/blob/master/generated/overview.svg#gh-dark-mode-only)
 ![img2](https://github.com/jstrieb/github-stats/blob/master/generated/languages.svg#gh-dark-mode-only)
 ![img3](https://github.com/jstrieb/github-stats/blob/master/generated/overview.svg#gh-light-mode-only)
 ![img4](https://github.com/jstrieb/github-stats/blob/master/generated/languages.svg#gh-light-mode-only)
+</a>
 
 Generate visualizations of GitHub user and repository statistics with GitHub
 Actions. Visualizations can include data for both private repositories, and for
