@@ -16,7 +16,8 @@ def generate_output_folder() -> None:
     """
     if not os.path.isdir("generated"):
         os.mkdir("generated")
-        print("Created directory: generated")
+        os.chmod("generated", 0o777)  # Ajuster les permissions si nécessaire
+        print("Created directory: generated with permissions 777")
     else:
         print("Directory already exists: generated")
 
@@ -119,6 +120,7 @@ async def main() -> None:
     """
     Generate all badges
     """
+    generate_output_folder()  # Assurez-vous que le dossier est créé avec les bonnes permissions
     check_permissions()
 
     access_token = os.getenv("ACCESS_TOKEN")
