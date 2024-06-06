@@ -52,3 +52,12 @@ jobs:
           # Force the build to succeed, even if no files were changed
           git commit -m 'Update generated files' || true
           git push
+
+      # List directory contents
+      - name: List directory contents
+        run: ls -lR
+
+      # Check generated files
+      - name: Check generated files
+        run: ls -l generated
+
