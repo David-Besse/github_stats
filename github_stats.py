@@ -364,6 +364,34 @@ class Stats(object):
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
+        self._repo_metrics_access: Dict[str, bool] = dict()
+
+    async def _can_query_repo_metrics(self, repo: str) -> bool:
+        """
+        Determine whether the token likely has sufficient permissions to query
+        repository metrics endpoints (stats/traffic) for this repo.
+        """
+        if repo in self._repo_metrics_access:
+            return self._repo_metrics_access[repo]
+
+        repo_meta = await self.queries.query_rest(f"/repos/{repo}")
+        if not isinstance(repo_meta, dict) or not repo_meta:
+            self._repo_metrics_access[repo] = False
+            return False
+
+        owner_login = repo_meta.get("owner", {}).get("login", "")
+        if owner_login == self.username:
+            self._repo_metrics_access[repo] = True
+            return True
+
+        permissions = repo_meta.get("permissions", {})
+        can_query = isinstance(permissions, dict) and (
+            permissions.get("push", False)
+            or permissions.get("maintain", False)
+            or permissions.get("admin", False)
+        )
+        self._repo_metrics_access[repo] = can_query
+        return can_query
 
     async def to_str(self) -> str:
         """
@@ -578,6 +606,9 @@ Languages:
         additions = 0
         deletions = 0
         for repo in await self.repos:
+            if not await self._can_query_repo_metrics(repo):
+                print(f"Skipping stats for {repo}: insufficient permissions.")
+                continue
             r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
             for author_obj in r:
                 # Handle malformed response from the API by skipping this repo
@@ -607,6 +638,9 @@ Languages:
 
         total = 0
         for repo in await self.repos:
+            if not await self._can_query_repo_metrics(repo):
+                print(f"Skipping traffic for {repo}: insufficient permissions.")
+                continue
             r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
             for view in r.get("views", []):
                 total += view.get("count", 0)
