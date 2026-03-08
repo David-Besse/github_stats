@@ -43,6 +43,8 @@ class Queries(object):
         """
         headers = {
             "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "github-stats-action",
         }
         try:
             async with self.semaphore:
@@ -50,13 +52,18 @@ class Queries(object):
                     "https://api.github.com/graphql",
                     headers=headers,
                     json={"query": generated_query},
+                    timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
                 )
             r_async.raise_for_status()
             result = await r_async.json()
             if result is not None:
                 return result
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            print("aiohttp failed for GraphQL query")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            status = getattr(e, "status", None)
+            status_text = f" status={status}" if status is not None else ""
+            print(
+                f"aiohttp failed for GraphQL query: {type(e).__name__}: {e}{status_text}"
+            )
             # Fall back on non-async requests
             try:
                 async with self.semaphore:
@@ -85,6 +92,8 @@ class Queries(object):
         for _ in range(60):
             headers = {
                 "Authorization": f"token {self.access_token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "github-stats-action",
             }
             if params is None:
                 params = dict()
@@ -96,6 +105,7 @@ class Queries(object):
                         f"https://api.github.com/{path}",
                         headers=headers,
                         params=tuple(params.items()),
+                        timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
                     )
                 if r_async.status == 202:
                     # print(f"{path} returned 202. Retrying...")
@@ -106,8 +116,12 @@ class Queries(object):
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                print("aiohttp failed for rest query")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                status = getattr(e, "status", None)
+                status_text = f" status={status}" if status is not None else ""
+                print(
+                    f"aiohttp failed for rest query ({path}): {type(e).__name__}: {e}{status_text}"
+                )
                 # Fall back on non-async requests
                 try:
                     async with self.semaphore:
