@@ -59,6 +59,10 @@ class Queries(object):
             if result is not None:
                 return result
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            if isinstance(e, aiohttp.ClientResponseError) and e.status == 401:
+                raise RuntimeError(
+                    "GitHub GraphQL returned 401 Unauthorized. Check ACCESS_TOKEN secret validity and scopes."
+                ) from e
             status = getattr(e, "status", None)
             status_text = f" status={status}" if status is not None else ""
             print(
@@ -73,6 +77,10 @@ class Queries(object):
                         json={"query": generated_query},
                         timeout=REQUEST_TIMEOUT_SECONDS,
                     )
+                    if r_requests.status_code == 401:
+                        raise RuntimeError(
+                            "GitHub GraphQL returned 401 Unauthorized on fallback. Check ACCESS_TOKEN secret validity and scopes."
+                        )
                     r_requests.raise_for_status()
                     result = r_requests.json()
                     if result is not None:
@@ -107,6 +115,10 @@ class Queries(object):
                         params=tuple(params.items()),
                         timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
                     )
+                if r_async.status == 401:
+                    raise RuntimeError(
+                        "GitHub REST returned 401 Unauthorized. Check ACCESS_TOKEN secret validity and scopes."
+                    )
                 if r_async.status == 202:
                     # print(f"{path} returned 202. Retrying...")
                     print("A path returned 202. Retrying...")
@@ -139,6 +151,11 @@ class Queries(object):
                             result = r_requests.json()
                         except ValueError:
                             result = dict()
+
+                        if r_requests.status_code == 401:
+                            raise RuntimeError(
+                                "GitHub REST returned 401 Unauthorized on fallback. Check ACCESS_TOKEN secret validity and scopes."
+                            )
 
                         if r_requests.status_code == 200:
                             return result
