@@ -93,7 +93,13 @@ class Queries(object):
                 return dict()
         return dict()
 
-    async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
+    async def query_rest(
+        self,
+        path: str,
+        params: Optional[Dict] = None,
+        max_retries: Optional[int] = None,
+        skip_on_202: bool = False,
+    ) -> Dict:
         """
         Make a request to the REST API
         :param path: API path to query
@@ -103,7 +109,10 @@ class Queries(object):
 
         normalized_path = path[1:] if path.startswith("/") else path
         is_stats_endpoint = "/stats/" in normalized_path
-        max_retries = REST_STATS_MAX_RETRIES if is_stats_endpoint else REST_DEFAULT_MAX_RETRIES
+        default_max_retries = (
+            REST_STATS_MAX_RETRIES if is_stats_endpoint else REST_DEFAULT_MAX_RETRIES
+        )
+        max_retries = default_max_retries if max_retries is None else max_retries
 
         for attempt in range(max_retries):
             headers = {
@@ -126,6 +135,9 @@ class Queries(object):
                         "GitHub REST returned 401 Unauthorized. Check ACCESS_TOKEN secret validity and scopes."
                     )
                 if r_async.status == 202:
+                    if skip_on_202:
+                        print(f"{normalized_path} returned 202. Skipping immediately.")
+                        return dict()
                     retry_after = r_async.headers.get("Retry-After", "")
                     default_delay = min(
                         REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
@@ -162,6 +174,11 @@ class Queries(object):
                             timeout=REQUEST_TIMEOUT_SECONDS,
                         )
                         if r_requests.status_code == 202:
+                            if skip_on_202:
+                                print(
+                                    f"{normalized_path} returned 202 on fallback. Skipping immediately."
+                                )
+                                return dict()
                             retry_after = r_requests.headers.get("Retry-After", "")
                             default_delay = min(
                                 REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
@@ -364,34 +381,43 @@ class Stats(object):
         self._repos: Optional[Set[str]] = None
         self._lines_changed: Optional[Tuple[int, int]] = None
         self._views: Optional[int] = None
-        self._repo_metrics_access: Dict[str, bool] = dict()
+        self._repo_metrics_access: Dict[str, Tuple[bool, bool]] = dict()
 
-    async def _can_query_repo_metrics(self, repo: str) -> bool:
+    async def _repo_metrics_permissions(self, repo: str) -> Tuple[bool, bool]:
         """
         Determine whether the token likely has sufficient permissions to query
         repository metrics endpoints (stats/traffic) for this repo.
+
+        Returns:
+          (can_query_stats, can_query_traffic)
         """
         if repo in self._repo_metrics_access:
             return self._repo_metrics_access[repo]
 
         repo_meta = await self.queries.query_rest(f"/repos/{repo}")
         if not isinstance(repo_meta, dict) or not repo_meta:
-            self._repo_metrics_access[repo] = False
-            return False
+            self._repo_metrics_access[repo] = (False, False)
+            return (False, False)
 
         owner_login = repo_meta.get("owner", {}).get("login", "")
-        if owner_login == self.username:
-            self._repo_metrics_access[repo] = True
-            return True
+        is_owner = owner_login == self.username
+        is_public = not bool(repo_meta.get("private", True))
 
         permissions = repo_meta.get("permissions", {})
-        can_query = isinstance(permissions, dict) and (
-            permissions.get("push", False)
-            or permissions.get("maintain", False)
-            or permissions.get("admin", False)
+        role_name = str(repo_meta.get("role_name", "")).lower()
+        has_write_like_role = role_name in {"admin", "maintain", "write"}
+        has_push_or_admin = isinstance(permissions, dict) and (
+            permissions.get("push", False) or permissions.get("admin", False)
         )
-        self._repo_metrics_access[repo] = can_query
-        return can_query
+
+        # Stats endpoints can often be queried on public repos.
+        can_query_stats = is_public or is_owner or has_push_or_admin or has_write_like_role
+
+        # Traffic endpoints require elevated access (write/admin in practice).
+        can_query_traffic = is_owner or has_push_or_admin or has_write_like_role
+
+        self._repo_metrics_access[repo] = (can_query_stats, can_query_traffic)
+        return can_query_stats, can_query_traffic
 
     async def to_str(self) -> str:
         """
@@ -606,10 +632,17 @@ Languages:
         additions = 0
         deletions = 0
         for repo in await self.repos:
-            if not await self._can_query_repo_metrics(repo):
+            can_query_stats, _ = await self._repo_metrics_permissions(repo)
+            if not can_query_stats:
                 print(f"Skipping stats for {repo}: insufficient permissions.")
                 continue
-            r = await self.queries.query_rest(f"/repos/{repo}/stats/contributors")
+            r = await self.queries.query_rest(
+                f"/repos/{repo}/stats/contributors",
+                max_retries=1,
+                skip_on_202=True,
+            )
+            if not isinstance(r, list):
+                continue
             for author_obj in r:
                 # Handle malformed response from the API by skipping this repo
                 if not isinstance(author_obj, dict) or not isinstance(
@@ -638,10 +671,17 @@ Languages:
 
         total = 0
         for repo in await self.repos:
-            if not await self._can_query_repo_metrics(repo):
+            _, can_query_traffic = await self._repo_metrics_permissions(repo)
+            if not can_query_traffic:
                 print(f"Skipping traffic for {repo}: insufficient permissions.")
                 continue
-            r = await self.queries.query_rest(f"/repos/{repo}/traffic/views")
+            r = await self.queries.query_rest(
+                f"/repos/{repo}/traffic/views",
+                max_retries=1,
+                skip_on_202=True,
+            )
+            if not isinstance(r, dict):
+                continue
             for view in r.get("views", []):
                 total += view.get("count", 0)
 
