@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v4.1.6
@@ -36,10 +37,26 @@ jobs:
         chmod 755 generated
         ls -ld generated
 
+    - name: Validate ACCESS_TOKEN (preflight)
+      run: |
+        http_code=$(curl -sS -o /tmp/user.json -w "%{http_code}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -H "User-Agent: github-stats-action" \
+          https://api.github.com/user)
+        if [ "$http_code" != "200" ]; then
+          echo "ACCESS_TOKEN preflight failed with HTTP $http_code"
+          cat /tmp/user.json
+          exit 1
+        fi
+        echo "ACCESS_TOKEN preflight OK"
+      env:
+        ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+
     - name: Generate images
       run: |
         python3 --version
-        python3 generate_images.py
+        timeout 10m python3 -u generate_images.py
       env:
         ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

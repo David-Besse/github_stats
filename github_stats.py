@@ -9,6 +9,8 @@ import requests
 
 
 REQUEST_TIMEOUT_SECONDS = 30
+REST_STATS_MAX_RETRIES = 15
+REST_STATS_RETRY_DELAY_SECONDS = 2
 
 
 ###############################################################################
@@ -97,7 +99,7 @@ class Queries(object):
         :return: deserialized REST JSON output
         """
 
-        for _ in range(60):
+        for _ in range(REST_STATS_MAX_RETRIES):
             headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "Accept": "application/vnd.github+json",
@@ -120,9 +122,14 @@ class Queries(object):
                         "GitHub REST returned 401 Unauthorized. Check ACCESS_TOKEN secret validity and scopes."
                     )
                 if r_async.status == 202:
-                    # print(f"{path} returned 202. Retrying...")
-                    print("A path returned 202. Retrying...")
-                    await asyncio.sleep(2)
+                    retry_after = r_async.headers.get("Retry-After", "")
+                    delay = (
+                        int(retry_after)
+                        if retry_after.isdigit()
+                        else REST_STATS_RETRY_DELAY_SECONDS
+                    )
+                    print(f"A path returned 202. Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
                     continue
 
                 result = await r_async.json()
@@ -144,8 +151,14 @@ class Queries(object):
                             timeout=REQUEST_TIMEOUT_SECONDS,
                         )
                         if r_requests.status_code == 202:
-                            print("A path returned 202. Retrying...")
-                            await asyncio.sleep(2)
+                            retry_after = r_requests.headers.get("Retry-After", "")
+                            delay = (
+                                int(retry_after)
+                                if retry_after.isdigit()
+                                else REST_STATS_RETRY_DELAY_SECONDS
+                            )
+                            print(f"A path returned 202. Retrying in {delay}s...")
+                            await asyncio.sleep(delay)
                             continue
                         try:
                             result = r_requests.json()

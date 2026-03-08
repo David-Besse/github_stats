@@ -122,7 +122,7 @@ async def main() -> None:
     generate_output_folder()  # Assurez-vous que le dossier est créé avec les bonnes permissions
     check_permissions()
 
-    access_token = os.getenv("ACCESS_TOKEN")
+    access_token = (os.getenv("ACCESS_TOKEN") or "").strip()
     if not access_token:
         raise RuntimeError("A personal access token is required to proceed!")
     user = os.getenv("GITHUB_ACTOR")
