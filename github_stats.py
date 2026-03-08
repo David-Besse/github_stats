@@ -17,6 +17,8 @@ REST_STATS_NON_OWNED_MAX_RETRIES = 1
 REST_STATS_RETRY_DELAY_SECONDS = 2
 REST_MAX_RETRY_DELAY_SECONDS = 10
 REST_STATS_SECOND_PASS_DELAY_SECONDS = 3
+COMMITS_PER_PAGE = 100
+COMMIT_DETAILS_BATCH_SIZE = 20
 
 
 ###############################################################################
@@ -610,6 +612,71 @@ Languages:
         own = self.username.lower()
         return sorted(repos, key=lambda repo: 0 if repo.split("/", 1)[0].lower() == own else 1)
 
+    async def _list_repo_commit_shas_by_author(self, repo: str) -> List[str]:
+        """
+        List commit SHAs for a repository authored by the current user.
+        """
+        shas: List[str] = []
+        page = 1
+        while True:
+            result = await self.queries.query_rest(
+                f"/repos/{repo}/commits",
+                params={
+                    "author": self.username,
+                    "per_page": COMMITS_PER_PAGE,
+                    "page": page,
+                },
+            )
+
+            if not isinstance(result, list):
+                break
+            if not result:
+                break
+
+            for commit in result:
+                if not isinstance(commit, dict):
+                    continue
+                sha = commit.get("sha")
+                if isinstance(sha, str) and sha:
+                    shas.append(sha)
+
+            if len(result) < COMMITS_PER_PAGE:
+                break
+            page += 1
+
+        return shas
+
+    async def _get_commit_additions_deletions(self, repo: str, sha: str) -> Tuple[int, int]:
+        """
+        Fetch additions and deletions for a single commit.
+        """
+        commit = await self.queries.query_rest(f"/repos/{repo}/commits/{sha}")
+        if not isinstance(commit, dict):
+            return (0, 0)
+        stats = commit.get("stats", {})
+        if not isinstance(stats, dict):
+            return (0, 0)
+        additions = int(stats.get("additions", 0) or 0)
+        deletions = int(stats.get("deletions", 0) or 0)
+        return (additions, deletions)
+
+    async def _sum_repo_commit_stats(self, repo: str, shas: List[str]) -> Tuple[int, int]:
+        """
+        Sum additions and deletions for all given commit SHAs in a repository.
+        """
+        total_additions = 0
+        total_deletions = 0
+
+        for i in range(0, len(shas), COMMIT_DETAILS_BATCH_SIZE):
+            batch = shas[i : i + COMMIT_DETAILS_BATCH_SIZE]
+            tasks = [self._get_commit_additions_deletions(repo, sha) for sha in batch]
+            results = await asyncio.gather(*tasks)
+            for additions, deletions in results:
+                total_additions += additions
+                total_deletions += deletions
+
+        return (total_additions, total_deletions)
+
     @property
     async def total_contributions(self) -> int:
         """
@@ -645,73 +712,22 @@ Languages:
         """
         if self._lines_changed is not None:
             return self._lines_changed
+
         additions = 0
         deletions = 0
-        unresolved_owned_repos: List[str] = []
-
         for repo in await self._repos_ordered_owned_first():
             can_query_stats, _ = await self._repo_metrics_permissions(repo)
             if not can_query_stats:
-                print(f"Skipping stats for {repo}: insufficient permissions.")
+                print(f"Skipping commits for {repo}: insufficient permissions.")
                 continue
 
-            is_owned_repo = repo.split("/", 1)[0].lower() == self.username.lower()
-            max_retries = (
-                REST_STATS_OWNED_MAX_RETRIES
-                if is_owned_repo
-                else REST_STATS_NON_OWNED_MAX_RETRIES
-            )
-            skip_on_202 = not is_owned_repo
-
-            r = await self.queries.query_rest(
-                f"/repos/{repo}/stats/contributors",
-                max_retries=max_retries,
-                skip_on_202=skip_on_202,
-            )
-            if not isinstance(r, list):
-                if is_owned_repo:
-                    unresolved_owned_repos.append(repo)
+            shas = await self._list_repo_commit_shas_by_author(repo)
+            if not shas:
                 continue
-            for author_obj in r:
-                # Handle malformed response from the API by skipping this repo
-                if not isinstance(author_obj, dict) or not isinstance(
-                    author_obj.get("author", {}), dict
-                ):
-                    continue
-                author = author_obj.get("author", {}).get("login", "")
-                if author != self.username:
-                    continue
 
-                for week in author_obj.get("weeks", []):
-                    additions += week.get("a", 0)
-                    deletions += week.get("d", 0)
-
-        # Second pass: retry unresolved owned repos after a short pause.
-        if unresolved_owned_repos:
-            print(
-                f"Retrying stats for {len(unresolved_owned_repos)} owned repos after short delay..."
-            )
-            await asyncio.sleep(REST_STATS_SECOND_PASS_DELAY_SECONDS)
-            for repo in unresolved_owned_repos:
-                r = await self.queries.query_rest(
-                    f"/repos/{repo}/stats/contributors",
-                    max_retries=REST_STATS_OWNED_MAX_RETRIES,
-                    skip_on_202=False,
-                )
-                if not isinstance(r, list):
-                    continue
-                for author_obj in r:
-                    if not isinstance(author_obj, dict) or not isinstance(
-                        author_obj.get("author", {}), dict
-                    ):
-                        continue
-                    author = author_obj.get("author", {}).get("login", "")
-                    if author != self.username:
-                        continue
-
-                    for week in author_obj.get("weeks", []):
-                        additions += week.get("a", 0)
-                        deletions += week.get("d", 0)
+            repo_additions, repo_deletions = await self._sum_repo_commit_stats(repo, shas)
+            additions += repo_additions
+            deletions += repo_deletions
 
         self._lines_changed = (additions, deletions)
         return self._lines_changed
