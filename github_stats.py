@@ -30,7 +30,7 @@ class Queries(object):
         max_connections: int = 10,
     ):
         self.username = username
-        self.access_token = access_token
+        self.access_token = access_token.strip()
         self.session = session
         self.semaphore = asyncio.Semaphore(max_connections)
 
@@ -91,7 +91,7 @@ class Queries(object):
 
         for _ in range(60):
             headers = {
-                "Authorization": f"token {self.access_token}",
+                "Authorization": f"Bearer {self.access_token}",
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "github-stats-action",
             }
@@ -135,8 +135,21 @@ class Queries(object):
                             print("A path returned 202. Retrying...")
                             await asyncio.sleep(2)
                             continue
-                        elif r_requests.status_code == 200:
-                            return r_requests.json()
+                        try:
+                            result = r_requests.json()
+                        except ValueError:
+                            result = dict()
+
+                        if r_requests.status_code == 200:
+                            return result
+
+                        if r_requests.status_code == 403:
+                            message = str(result.get("message", "")).lower()
+                            if "rate limit" in message:
+                                print("GitHub API rate limit reached on REST fallback.")
+                            return result
+
+                        return result
                 except requests.RequestException:
                     continue
         # print(f"There were too many 202s. Data for {path} will be incomplete.")
