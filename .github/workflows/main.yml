@@ -33,7 +33,7 @@ jobs:
       run: |
         mkdir -p generated
         ls -ld generated
-        chmod 777 generated
+        chmod 755 generated
         ls -ld generated
 
     - name: Generate images
@@ -45,7 +45,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         EXCLUDED: ${{ secrets.EXCLUDED }}
         EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
-        EXCLUDE_FORKED_REPOS: true
+        EXCLUDE_FORKED_REPOS: ${{ secrets.EXCLUDE_FORKED_REPOS }}
 
     - name: Commit to the repo
       run: |

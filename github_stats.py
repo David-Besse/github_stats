@@ -8,6 +8,9 @@ import aiohttp
 import requests
 
 
+REQUEST_TIMEOUT_SECONDS = 30
+
+
 ###############################################################################
 # Main Classes
 ###############################################################################
@@ -48,21 +51,27 @@ class Queries(object):
                     headers=headers,
                     json={"query": generated_query},
                 )
+            r_async.raise_for_status()
             result = await r_async.json()
             if result is not None:
                 return result
-        except:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             print("aiohttp failed for GraphQL query")
             # Fall back on non-async requests
-            async with self.semaphore:
-                r_requests = requests.post(
-                    "https://api.github.com/graphql",
-                    headers=headers,
-                    json={"query": generated_query},
-                )
-                result = r_requests.json()
-                if result is not None:
-                    return result
+            try:
+                async with self.semaphore:
+                    r_requests = requests.post(
+                        "https://api.github.com/graphql",
+                        headers=headers,
+                        json={"query": generated_query},
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                    )
+                    r_requests.raise_for_status()
+                    result = r_requests.json()
+                    if result is not None:
+                        return result
+            except requests.RequestException:
+                return dict()
         return dict()
 
     async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
@@ -90,28 +99,32 @@ class Queries(object):
                     )
                 if r_async.status == 202:
                     # print(f"{path} returned 202. Retrying...")
-                    print(f"A path returned 202. Retrying...")
+                    print("A path returned 202. Retrying...")
                     await asyncio.sleep(2)
                     continue
 
                 result = await r_async.json()
                 if result is not None:
                     return result
-            except:
+            except (aiohttp.ClientError, asyncio.TimeoutError):
                 print("aiohttp failed for rest query")
                 # Fall back on non-async requests
-                async with self.semaphore:
-                    r_requests = requests.get(
-                        f"https://api.github.com/{path}",
-                        headers=headers,
-                        params=tuple(params.items()),
-                    )
-                    if r_requests.status_code == 202:
-                        print(f"A path returned 202. Retrying...")
-                        await asyncio.sleep(2)
-                        continue
-                    elif r_requests.status_code == 200:
-                        return r_requests.json()
+                try:
+                    async with self.semaphore:
+                        r_requests = requests.get(
+                            f"https://api.github.com/{path}",
+                            headers=headers,
+                            params=tuple(params.items()),
+                            timeout=REQUEST_TIMEOUT_SECONDS,
+                        )
+                        if r_requests.status_code == 202:
+                            print("A path returned 202. Retrying...")
+                            await asyncio.sleep(2)
+                            continue
+                        elif r_requests.status_code == 200:
+                            return r_requests.json()
+                except requests.RequestException:
+                    continue
         # print(f"There were too many 202s. Data for {path} will be incomplete.")
         print("There were too many 202s. Data for this repository will be incomplete.")
         return dict()
@@ -377,8 +390,11 @@ Languages:
         # TODO: Improve languages to scale by number of contributions to
         #       specific filetypes
         langs_total = sum([v.get("size", 0) for v in self._languages.values()])
-        for k, v in self._languages.items():
-            v["prop"] = 100 * (v.get("size", 0) / langs_total)
+        for v in self._languages.values():
+            if langs_total > 0:
+                v["prop"] = 100 * (v.get("size", 0) / langs_total)
+            else:
+                v["prop"] = 0
 
     @property
     async def name(self) -> str:
