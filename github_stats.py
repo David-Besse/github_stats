@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import random
 from typing import Dict, List, Optional, Set, Tuple, Any, cast
 
 import aiohttp
@@ -11,8 +12,11 @@ import requests
 REQUEST_TIMEOUT_SECONDS = 30
 REST_DEFAULT_MAX_RETRIES = 10
 REST_STATS_MAX_RETRIES = 5
+REST_STATS_OWNED_MAX_RETRIES = 3
+REST_STATS_NON_OWNED_MAX_RETRIES = 1
 REST_STATS_RETRY_DELAY_SECONDS = 2
 REST_MAX_RETRY_DELAY_SECONDS = 10
+REST_STATS_SECOND_PASS_DELAY_SECONDS = 3
 
 
 ###############################################################################
@@ -143,13 +147,15 @@ class Queries(object):
                         REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
                         REST_MAX_RETRY_DELAY_SECONDS,
                     )
-                    delay = (
+                    delay_base = (
                         int(retry_after)
                         if retry_after.isdigit()
                         else default_delay
                     )
+                    # Add slight jitter to avoid synchronized retries.
+                    delay = delay_base + random.uniform(0, 0.5)
                     print(
-                        f"{normalized_path} returned 202. Retrying in {delay}s "
+                        f"{normalized_path} returned 202. Retrying in {delay:.2f}s "
                         f"({attempt + 1}/{max_retries})..."
                     )
                     await asyncio.sleep(delay)
@@ -184,13 +190,14 @@ class Queries(object):
                                 REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
                                 REST_MAX_RETRY_DELAY_SECONDS,
                             )
-                            delay = (
+                            delay_base = (
                                 int(retry_after)
                                 if retry_after.isdigit()
                                 else default_delay
                             )
+                            delay = delay_base + random.uniform(0, 0.5)
                             print(
-                                f"{normalized_path} returned 202. Retrying in {delay}s "
+                                f"{normalized_path} returned 202. Retrying in {delay:.2f}s "
                                 f"({attempt + 1}/{max_retries})..."
                             )
                             await asyncio.sleep(delay)
@@ -594,6 +601,15 @@ Languages:
         assert self._repos is not None
         return self._repos
 
+    async def _repos_ordered_owned_first(self) -> List[str]:
+        """
+        Return repositories ordered with owned repos first to maximize useful
+        stats under tight runtime constraints.
+        """
+        repos = list(await self.repos)
+        own = self.username.lower()
+        return sorted(repos, key=lambda repo: 0 if repo.split("/", 1)[0].lower() == own else 1)
+
     @property
     async def total_contributions(self) -> int:
         """
@@ -631,17 +647,30 @@ Languages:
             return self._lines_changed
         additions = 0
         deletions = 0
-        for repo in await self.repos:
+        unresolved_owned_repos: List[str] = []
+
+        for repo in await self._repos_ordered_owned_first():
             can_query_stats, _ = await self._repo_metrics_permissions(repo)
             if not can_query_stats:
                 print(f"Skipping stats for {repo}: insufficient permissions.")
                 continue
+
+            is_owned_repo = repo.split("/", 1)[0].lower() == self.username.lower()
+            max_retries = (
+                REST_STATS_OWNED_MAX_RETRIES
+                if is_owned_repo
+                else REST_STATS_NON_OWNED_MAX_RETRIES
+            )
+            skip_on_202 = not is_owned_repo
+
             r = await self.queries.query_rest(
                 f"/repos/{repo}/stats/contributors",
-                max_retries=1,
-                skip_on_202=True,
+                max_retries=max_retries,
+                skip_on_202=skip_on_202,
             )
             if not isinstance(r, list):
+                if is_owned_repo:
+                    unresolved_owned_repos.append(repo)
                 continue
             for author_obj in r:
                 # Handle malformed response from the API by skipping this repo
@@ -656,6 +685,33 @@ Languages:
                 for week in author_obj.get("weeks", []):
                     additions += week.get("a", 0)
                     deletions += week.get("d", 0)
+
+        # Second pass: retry unresolved owned repos after a short pause.
+        if unresolved_owned_repos:
+            print(
+                f"Retrying stats for {len(unresolved_owned_repos)} owned repos after short delay..."
+            )
+            await asyncio.sleep(REST_STATS_SECOND_PASS_DELAY_SECONDS)
+            for repo in unresolved_owned_repos:
+                r = await self.queries.query_rest(
+                    f"/repos/{repo}/stats/contributors",
+                    max_retries=REST_STATS_OWNED_MAX_RETRIES,
+                    skip_on_202=False,
+                )
+                if not isinstance(r, list):
+                    continue
+                for author_obj in r:
+                    if not isinstance(author_obj, dict) or not isinstance(
+                        author_obj.get("author", {}), dict
+                    ):
+                        continue
+                    author = author_obj.get("author", {}).get("login", "")
+                    if author != self.username:
+                        continue
+
+                    for week in author_obj.get("weeks", []):
+                        additions += week.get("a", 0)
+                        deletions += week.get("d", 0)
 
         self._lines_changed = (additions, deletions)
         return self._lines_changed
