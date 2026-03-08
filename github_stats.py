@@ -9,8 +9,10 @@ import requests
 
 
 REQUEST_TIMEOUT_SECONDS = 30
-REST_STATS_MAX_RETRIES = 15
+REST_DEFAULT_MAX_RETRIES = 10
+REST_STATS_MAX_RETRIES = 5
 REST_STATS_RETRY_DELAY_SECONDS = 2
+REST_MAX_RETRY_DELAY_SECONDS = 10
 
 
 ###############################################################################
@@ -99,7 +101,11 @@ class Queries(object):
         :return: deserialized REST JSON output
         """
 
-        for _ in range(REST_STATS_MAX_RETRIES):
+        normalized_path = path[1:] if path.startswith("/") else path
+        is_stats_endpoint = "/stats/" in normalized_path
+        max_retries = REST_STATS_MAX_RETRIES if is_stats_endpoint else REST_DEFAULT_MAX_RETRIES
+
+        for attempt in range(max_retries):
             headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "Accept": "application/vnd.github+json",
@@ -107,12 +113,10 @@ class Queries(object):
             }
             if params is None:
                 params = dict()
-            if path.startswith("/"):
-                path = path[1:]
             try:
                 async with self.semaphore:
                     r_async = await self.session.get(
-                        f"https://api.github.com/{path}",
+                        f"https://api.github.com/{normalized_path}",
                         headers=headers,
                         params=tuple(params.items()),
                         timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
@@ -123,12 +127,19 @@ class Queries(object):
                     )
                 if r_async.status == 202:
                     retry_after = r_async.headers.get("Retry-After", "")
+                    default_delay = min(
+                        REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
+                        REST_MAX_RETRY_DELAY_SECONDS,
+                    )
                     delay = (
                         int(retry_after)
                         if retry_after.isdigit()
-                        else REST_STATS_RETRY_DELAY_SECONDS
+                        else default_delay
                     )
-                    print(f"A path returned 202. Retrying in {delay}s...")
+                    print(
+                        f"{normalized_path} returned 202. Retrying in {delay}s "
+                        f"({attempt + 1}/{max_retries})..."
+                    )
                     await asyncio.sleep(delay)
                     continue
 
@@ -139,25 +150,32 @@ class Queries(object):
                 status = getattr(e, "status", None)
                 status_text = f" status={status}" if status is not None else ""
                 print(
-                    f"aiohttp failed for rest query ({path}): {type(e).__name__}: {e}{status_text}"
+                    f"aiohttp failed for rest query ({normalized_path}): {type(e).__name__}: {e}{status_text}"
                 )
                 # Fall back on non-async requests
                 try:
                     async with self.semaphore:
                         r_requests = requests.get(
-                            f"https://api.github.com/{path}",
+                            f"https://api.github.com/{normalized_path}",
                             headers=headers,
                             params=tuple(params.items()),
                             timeout=REQUEST_TIMEOUT_SECONDS,
                         )
                         if r_requests.status_code == 202:
                             retry_after = r_requests.headers.get("Retry-After", "")
+                            default_delay = min(
+                                REST_STATS_RETRY_DELAY_SECONDS * (attempt + 1),
+                                REST_MAX_RETRY_DELAY_SECONDS,
+                            )
                             delay = (
                                 int(retry_after)
                                 if retry_after.isdigit()
-                                else REST_STATS_RETRY_DELAY_SECONDS
+                                else default_delay
                             )
-                            print(f"A path returned 202. Retrying in {delay}s...")
+                            print(
+                                f"{normalized_path} returned 202. Retrying in {delay}s "
+                                f"({attempt + 1}/{max_retries})..."
+                            )
                             await asyncio.sleep(delay)
                             continue
                         try:
@@ -183,7 +201,10 @@ class Queries(object):
                 except requests.RequestException:
                     continue
         # print(f"There were too many 202s. Data for {path} will be incomplete.")
-        print("There were too many 202s. Data for this repository will be incomplete.")
+        print(
+            f"There were too many 202s for {normalized_path}. "
+            "Data for this repository will be incomplete."
+        )
         return dict()
 
     @staticmethod
